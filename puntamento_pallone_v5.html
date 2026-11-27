@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Puntamento pallone v5</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--fg:#e8edf7;--dim:#8a94a8;--ok:#3ddc84;--warn:#ffb020;--bad:#ff5a5a;--card:#121a30;--line:#22304f}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif}
+body{padding:env(safe-area-inset-top,0px) 12px env(safe-area-inset-bottom,0px)}
+h1{font-size:18px;margin:12px 0 6px}
+button,select{font-size:16px;padding:10px 12px;border-radius:10px;border:1px solid #2a3450;background:#16203a;color:var(--fg)}
+button{touch-action:manipulation}
+button.big{width:100%;padding:16px;font-size:18px;margin:6px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:8px 0}
+.dim{color:var(--dim);font-size:13px}
+.warnbox{background:#3a2a10;border:1px solid var(--warn);color:#ffd27a;border-radius:10px;padding:8px;font-size:14px;margin:6px 0}
+.big-num{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
+pre{white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--dim);max-height:120px;overflow:auto}
+
+#ar{position:fixed;inset:0;display:none;background:#000;z-index:10}
+#ar video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#marker{position:absolute;width:60px;height:60px;margin:-30px 0 0 -30px;border:3px solid var(--ok);border-radius:50%;pointer-events:none;display:none}
+#marker.off{border-color:var(--warn)}
+#arrowWrap{position:absolute;left:50%;top:38%;width:160px;height:160px;margin:-80px 0 0 -80px;pointer-events:none;display:none}
+#arrowWrap svg{width:100%;height:100%}
+#centered{position:absolute;left:0;right:0;top:38%;text-align:center;margin-top:-20px;font-size:26px;font-weight:700;color:var(--ok);text-shadow:0 0 8px #000;display:none;pointer-events:none}
+#crosshair{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border:1px dashed rgba(255,255,255,.5);border-radius:50%;pointer-events:none}
+#arClose{position:absolute;top:env(safe-area-inset-top,0px);right:8px;margin-top:8px;background:rgba(18,26,48,.9)}
+#arHud{position:absolute;left:0;right:0;bottom:0;padding:12px;background:rgba(0,0,0,.65);color:#fff}
+#pointBtn{width:100%;padding:22px;font-size:18px;background:#1d3a2a;border-color:var(--ok);user-select:none;-webkit-user-select:none}
+#pointBtn.active{background:var(--ok);color:#000}
+</style>
+</head>
+<body>
+
+<h1>Puntamento pallone v5</h1>
+<div class="dim" id="status">Premi "Attiva sensori" per iniziare.</div>
+
+<div class="card">
+  <div class="row">
+    <button id="startBtn" class="big">Attiva sensori e suono</button>
+  </div>
+  <div class="row">
+    <button id="testSound">Test suono</button>
+    <span class="dim">Se non senti nulla, alza il volume multimediale.</span>
+  </div>
+  <div class="row">
+    <label class="dim">Sorgente:
+      <select id="source">
+        <option value="live">Live (SondeHub)</option>
+        <option value="replay">Replay (volo registrato)</option>
+      </select>
+    </label>
+    <label class="dim">Velocità:
+      <select id="speed">
+        <option value="1">1x</option>
+        <option value="10" selected>10x</option>
+        <option value="60">60x</option>
+      </select>
+    </label>
+    <button id="pauseBtn" style="display:none">Pausa</button>
+  </div>
+  <div class="row" id="replayRow" style="display:none">
+    <input type="range" id="replaySlider" min="0" max="1000" value="0" style="flex:1" disabled>
+    <span class="dim" id="replayTime">--</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="dim">Pallone</div>
+  <div id="balloonInfo" class="dim">Nessun pallone selezionato.</div>
+  <table style="margin-top:8px"><tbody id="infoTable"></tbody></table>
+</div>
+
+<div class="card">
+  <div class="row"><b>Palloni (ultime 24 ore)</b> <button id="refreshBtn">Aggiorna</button></div>
+  <table>
+    <thead><tr><th>Serial</th><th>Az</th><th>El</th><th>Quota</th><th>Ultimo</th></tr></thead>
+    <tbody id="list"><tr><td colspan="5" class="dim">Nessun dato ancora.</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="row"><b>Test in casa</b></div>
+  <div class="dim">Per provare freccia, cerchio e suono senza calibrazione: punta il telefono verso un oggetto e premi "Centra su di me". Il bersaglio si sposta in quella direzione.</div>
+  <div class="row">
+    <button id="centerMe">Centra su di me</button>
+    <button id="resetTest">Annulla test</button>
+  </div>
+  <div class="dim" id="testInfo">Test: non attivo</div>
+</div>
+
+<div class="card">
+  <div class="row"><b>Calibrazione con il Sole</b></div>
+  <div class="row">
+    <button id="calBtn">Calibra</button>
+    <button id="calReset">Azzera</button>
+  </div>
+  <div class="dim">Da fare all'aperto, con filtro solare certificato. Non guardare mai il Sole attraverso il telefono senza filtro.</div>
+  <div class="dim" id="calInfo">Correzione: non fatta</div>
+</div>
+
+<div class="card">
+  <button id="arBtn" class="big" disabled>Apri vista AR</button>
+  <div class="dim">Usa la fotocamera posteriore. Si attiva quando i sensori sono accesi e hai scelto un pallone.</div>
+</div>
+
+<div class="card">
+  <div class="dim">Debug SondeHub</div>
+  <pre id="debug">--</pre>
+</div>
+
+<div id="ar">
+  <video id="video" playsinline muted></video>
+  <div id="crosshair"></div>
+  <div id="marker"></div>
+  <div id="arrowWrap">
+    <svg viewBox="0 0 100 100"><polygon points="50,6 86,70 62,70 62,94 38,94 38,70 14,70" fill="#ffb020" stroke="#000" stroke-width="2"/></svg>
+  </div>
+  <div id="centered">CENTRATO</div>
+  <button id="arClose">Chiudi</button>
+  <div id="arHud">
+    <div id="arWarn" class="warnbox" style="display:none">Bussola non calibrata: la direzione può essere sbagliata di decine di gradi.</div>
+    <div class="row" style="justify-content:space-between">
+      <div><div class="dim" style="color:#bbb">Scarto</div><div class="big-num" id="arDelta">--</div></div>
+      <div><div class="dim" style="color:#bbb">Distanza</div><div class="big-num" id="arDist">--</div></div>
+    </div>
+    <div class="dim" id="arHint" style="color:#ddd">--</div>
+    <button id="pointBtn">Tieni premuto per puntare (suono attivo)</button>
+  </div>
+</div>
+
+<script>
+// ===== Impostazioni =====
+const OBS = { lat: 40.0146, lon: 18.1700, h: 50 };
+const SH = "https://api.v2.sondehub.org/sondes/telemetry";
+const REFRESH_MS = 20000;
+const R = 6371000;
+const BURST_ALT = 30000;
+const HFOV = 65, VFOV = 48;
+const SMOOTH = 0.08;                 // filtro più lento: meno sfarfallio
+const DEADZONE = 0.3;                // gradi: sotto questa variazione il cerchio non si muove
+
+// ===== Stato =====
+let fAzX = 0, fAzY = 0, fEl = null;
+let offset = 0, sinSum = 0, cosSum = 0, calCount = 0;
+let testAz = 0, testEl = 0, testOn = false;
+let sondes = {}, tracks = {}, chosen = null;
+let pointing = false;
+let audioCtx = null, contOsc = null, beepTimer = null;
+let replayStartWall = 0, replayStartTrack = 0, replayRunning = false, replayPaused = false, pausedAt = 0;
+let lastDisplay = 0, markerX = null, markerY = null;
+
+const $ = id => document.getElementById(id);
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+const angDiff = (a, b) => ((a - b + 540) % 360) - 180;
+
+try {
+  const s = JSON.parse(localStorage.getItem("cal_v5") || "null");
+  if (s) { sinSum = s.sinSum; cosSum = s.cosSum; calCount = s.n; }
+} catch (e) {}
+function currentOffset() { return calCount ? deg(Math.atan2(sinSum, cosSum)) : 0; }
+function showCal() {
+  $("calInfo").textContent = calCount ? `Correzione ${currentOffset().toFixed(1)}° (${calCount} misure)` : "Correzione: non fatta";
+  $("arWarn").style.display = calCount || testOn ? "none" : "block";
+}
+showCal();
+
+// ===== Orientamento =====
+function camDirFromAngles(alpha, beta, gamma) {
+  const a = rad(alpha), b = rad(beta), g = rad(gamma);
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+  const zx = ca * sg + sa * sb * cg;
+  const zy = sa * sg - ca * sb * cg;
+  const zz = cb * cg;
+  return { az: (deg(Math.atan2(-zx, -zy)) + 360) % 360, el: deg(Math.asin(Math.max(-1, Math.min(1, -zz)))) };
+}
+function onOrientation(e) {
+  if (e.alpha == null || e.beta == null || e.gamma == null) return;
+  const d = camDirFromAngles(e.alpha, e.beta, e.gamma);
+  const s = rad(d.az);
+  if (fEl == null) { fAzX = Math.sin(s); fAzY = Math.cos(s); fEl = d.el; return; }
+  fAzX += SMOOTH * (Math.sin(s) - fAzX);
+  fAzY += SMOOTH * (Math.cos(s) - fAzY);
+  fEl += SMOOTH * (d.el - fEl);
+}
+function rawAzFiltered() { return fEl == null ? null : (deg(Math.atan2(fAzX, fAzY)) + 360) % 360; }
+function camAz() { const r = rawAzFiltered(); return r == null ? null : (r + currentOffset() + testAz + 360) % 360; }
+function camEl() { return fEl == null ? null : fEl + testEl; }
+
+// ===== Geometria =====
+function aimTo(lat, lon, alt) {
+  const φ1 = rad(OBS.lat), φ2 = rad(lat), Δλ = rad(lon - OBS.lon);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  const az = (deg(Math.atan2(y, x)) + 360) % 360;
+  const γ = Math.acos(Math.min(1, Math.sin(φ1) * Math.sin(φ2) + Math.cos(φ1) * Math.cos(φ2) * Math.cos(Δλ)));
+  const r1 = R + OBS.h, r2 = R + alt;
+  const el = deg(Math.atan2(Math.cos(γ) * r2 - r1, Math.sin(γ) * r2));
+  const slant = Math.sqrt(r1 * r1 + r2 * r2 - 2 * r1 * r2 * Math.cos(γ));
+  return { az, el, slant };
+}
+
+// ===== Audio: creato al primo tocco, sincrono =====
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+
+// ===== Sensori =====
+async function startSensors() {
+  ensureAudio();                                    // prima di qualsiasi await: serve il gesto dell'utente
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      const p = await DeviceOrientationEvent.requestPermission();
+      if (p !== "granted") throw new Error("permesso negato");
+    }
+  } catch (err) {
+    $("status").textContent = "Sensori non disponibili: " + err.message + ". Serve HTTPS.";
+    return;
+  }
+  let absoluteSeen = false;
+  window.addEventListener("deviceorientationabsolute", e => { absoluteSeen = true; onOrientation(e); }, true);
+  window.addEventListener("deviceorientation", e => { if (!absoluteSeen) onOrientation(e); }, true);
+  $("status").textContent = "Sensori e suono attivi.";
+  $("startBtn").textContent = "Sensori attivi";
+  $("arBtn").disabled = false;
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+  requestAnimationFrame(loop);
+}
+
+// ===== Dati SondeHub =====
+async function fetchTelemetry(params) {
+  const url = SH + "?" + new URLSearchParams(params).toString();
+  const r = await fetch(url);
+  const text = await r.text();
+  $("debug").textContent = `HTTP ${r.status} - ${url}\n` + text.slice(0, 400);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return JSON.parse(text);
+}
+function toPoints(serialData) {
+  const pts = [];
+  for (const k of Object.keys(serialData || {})) {
+    const p = serialData[k];
+    if (!p || typeof p.lat !== "number" || typeof p.lon !== "number" || typeof p.alt !== "number") continue;
+    const ts = Date.parse(p.datetime || k);
+    if (isNaN(ts)) continue;
+    pts.push({ ts, lat: p.lat, lon: p.lon, alt: p.alt, vz: p.vel_v ?? 0, vh: p.vel_h ?? 0, hd: p.heading ?? null });
+  }
+  return pts.sort((a, b) => a.ts - b.ts);
+}
+
+// Lista palloni delle ultime 24 ore, anche quelli non più in volo (utili per il replay)
+async function refresh() {
+  try {
+    const data = await fetchTelemetry({ duration: "24h" });
+    sondes = {};
+    for (const serial of Object.keys(data)) {
+      const pts = toPoints(data[serial]);
+      if (!pts.length) continue;
+      tracks[serial] = pts;
+      sondes[serial] = pts[pts.length - 1];
+    }
+    renderList();
+    $("status").textContent = `Aggiornato alle ${new Date().toLocaleTimeString("it-IT")} - palloni: ${Object.keys(sondes).length}`;
+  } catch (err) {
+    $("status").textContent = "Errore dati: " + err.message;
+  }
+}
+
+function renderList() {
+  const rows = [];
+  for (const s of Object.keys(sondes)) {
+    const d = sondes[s];
+    const g = aimTo(d.lat, d.lon, d.alt);
+    rows.push({ s, g, d });
+  }
+  rows.sort((a, b) => b.d.ts - a.d.ts);
+  const tb = $("list");
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="dim">Nessun pallone nelle ultime 24 ore.</td></tr>'; return; }
+  tb.innerHTML = rows.map(({ s, g, d }) =>
+    `<tr><td><a href="#" data-s="${s}" style="color:#8ab4ff">${s}</a></td>
+     <td>${g.az.toFixed(0)}°</td><td>${g.el.toFixed(1)}°</td>
+     <td>${(d.alt / 1000).toFixed(1)} km</td>
+     <td class="dim">${new Date(d.ts).toLocaleTimeString("it-IT")}</td></tr>`
+  ).join("");
+  tb.querySelectorAll("a[data-s]").forEach(a => a.onclick = ev => { ev.preventDefault(); chooseBalloon(a.dataset.s); });
+}
+
+function chooseBalloon(serial) {
+  chosen = serial;
+  if ($("source").value === "replay") startReplay(serial);
+  updateInfo();
+}
+
+// ===== Replay di un volo registrato =====
+// Usa la traccia dei dati già scaricati, nell'ordine del tempo, senza dipendere dall'ora attuale.
+function startReplay(serial) {
+  const pts = tracks[serial];
+  if (!pts || pts.length < 2) { $("status").textContent = "Traccia troppo corta per il replay."; return; }
+  chosen = serial;
+  replayStartTrack = pts[0].ts;
+  replayStartWall = performance.now();
+  replayRunning = true; replayPaused = false;
+  $("replayRow").style.display = "flex";
+  $("pauseBtn").style.display = "inline-block";
+  $("pauseBtn").textContent = "Pausa";
+  $("status").textContent = "Replay del pallone " + serial;
+  updateInfo();
+}
+function replayPlaybackTime() {
+  const speed = Number($("speed").value);
+  return replayStartTrack + (replayPaused ? pausedAt : (performance.now() - replayStartWall) * speed);
+}
+
+function currentPoint() {
+  if (!chosen) return null;
+  if ($("source").value === "live") return sondes[chosen] || null;
+  const pts = tracks[chosen];
+  if (!pts || !pts.length) return null;
+  const t = replayPlaybackTime();
+  const end = pts[pts.length - 1].ts;
+  const tc = Math.min(t, end);
+  let i = 0;
+  while (i < pts.length - 2 && pts[i + 1].ts < tc) i++;
+  const a = pts[i], b = pts[i + 1] || a;
+  const f = b.ts === a.ts ? 0 : (tc - a.ts) / (b.ts - a.ts);
+  $("replaySlider").value = Math.round((tc - pts[0].ts) / Math.max(1, end - pts[0].ts) * 1000);
+  $("replayTime").textContent = new Date(tc).toLocaleTimeString("it-IT");
+  return { ts: tc, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f,
+           alt: a.alt + (b.alt - a.alt) * f, vz: a.vz, vh: a.vh, hd: a.hd };
+}
+
+$("pauseBtn").onclick = () => {
+  if (!replayRunning) return;
+  if (!replayPaused) {
+    pausedAt = replayPlaybackTime() - replayStartTrack;
+    replayPaused = true;
+    $("pauseBtn").textContent = "Riprendi";
+  } else {
+    replayStartWall = performance.now();
+    replayStartTrack = replayStartTrack + pausedAt - pausedAt; // il tempo parte dal punto in pausa
+    replayStartTrack = replayStartTrack + 0;
+    replayPaused = false;
+    $("pauseBtn").textContent = "Pausa";
+  }
+};
+$("speed").onchange = () => {
+  if (replayRunning && !replayPaused) {
+    const now = replayPlaybackTime();
+    replayStartTrack = now;
+    replayStartWall = performance.now();
+  }
+};
+$("source").onchange = () => {
+  replayRunning = false; replayPaused = false;
+  $("replayRow").style.display = "none";
+  $("pauseBtn").style.display = "none";
+  if ($("source").value === "replay" && chosen) startReplay(chosen);
+};
+
+// ===== Informazioni sul pallone =====
+function moonPhase(date) {
+  const synodic = 29.530588853;
+  const ref = Date.UTC(2000, 0, 6, 18, 14);
+  const days = (date - ref) / 86400000;
+  const age = ((days % synodic) + synodic) % synodic;
+  return { age: age.toFixed(1), illum: Math.round((1 - Math.cos(2 * Math.PI * age / synodic)) / 2 * 100) };
+}
+function updateInfo() {
+  const p = currentPoint();
+  if (!p) { $("balloonInfo").textContent = "Nessun pallone selezionato."; $("infoTable").innerHTML = ""; return; }
+  const g = aimTo(p.lat, p.lon, p.alt);
+  const burstS = p.vz > 0.1 ? Math.max(0, (BURST_ALT - p.alt) / p.vz) : null;
+  const apparentArcmin = (2 / g.slant) * 180 / Math.PI * 60;
+  const moon = moonPhase(Date.now());
+  const motion = p.vz > 0.1 ? "in salita" : p.vz < -0.1 ? "in discesa" : "stabile";
+  const age = Date.now() - p.ts;
+  $("balloonInfo").textContent = `Pallone ${chosen}` + (age > 10 * 60000 && $("source").value === "live" ? " (dati non recenti)" : "");
+  $("infoTable").innerHTML = [
+    ["Quota", (p.alt / 1000).toFixed(2) + " km"],
+    ["Velocità verticale", (p.vz >= 0 ? "+" : "") + p.vz.toFixed(1) + " m/s (" + motion + ")"],
+    ["Direzione di movimento", (p.hd != null ? p.hd.toFixed(0) + "°" : "--") + " (orizzontale " + p.vh.toFixed(1) + " m/s)"],
+    ["Tempo stimato allo scoppio", burstS == null ? "non stimabile (non sale)" : Math.round(burstS / 60) + " min (scoppio ipotizzato a " + BURST_ALT / 1000 + " km)"],
+    ["Dimensione apparente", apparentArcmin.toFixed(1) + " arcmin"],
+    ["Magnitudine", "non calcolata"],
+    ["Fase della Luna", moon.illum + "% illuminata (età " + moon.age + " giorni)"],
+    ["Distanza", (g.slant / 1000).toFixed(1) + " km"],
+  ].map(([k, v]) => `<tr><td class="dim">${k}</td><td>${v}</td></tr>`).join("");
+}
+
+// ===== Test in casa =====
+$("centerMe").onclick = () => {
+  const p = currentPoint();
+  const az = rawAzFiltered();
+  if (!p || az == null) { $("testInfo").textContent = "Serve un pallone scelto e i sensori attivi."; return; }
+  const g = aimTo(p.lat, p.lon, p.alt);
+  // il bersaglio ora compare nella direzione in cui stai puntando
+  testAz = angDiff(az, (g.az - currentOffset() + 360) % 360) * 0 + angDiff(az + currentOffset(), g.az) * -1;
+  testEl = g.el - fEl;
+  testOn = true;
+  $("testInfo").textContent = `Test attivo: bersaglio spostato di ${testAz.toFixed(1)}° in azimut e ${testEl.toFixed(1)}° in elevazione`;
+  showCal();
+};
+$("resetTest").onclick = () => { testAz = 0; testEl = 0; testOn = false; $("testInfo").textContent = "Test: non attivo"; showCal(); };
+
+// ===== Calibrazione con il Sole =====
+function sunAzEl(date) {
+  const d = (date - Date.UTC(2000, 0, 1, 12)) / 86400000;
+  const L = (280.46 + 0.9856474 * d) % 360, g = rad((357.528 + 0.9856003 * d) % 360);
+  const lam = rad(L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g));
+  const eps = rad(23.439 - 0.0000004 * d);
+  const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam));
+  const dec = Math.asin(Math.sin(eps) * Math.sin(lam));
+  const gmst = (18.697374558 + 24.06570982441908 * d) % 24;
+  const H = rad(((gmst * 15 + OBS.lon) % 360 + 360) % 360) - ra;
+  const φ = rad(OBS.lat);
+  const el = Math.asin(Math.sin(φ) * Math.sin(dec) + Math.cos(φ) * Math.cos(dec) * Math.cos(H));
+  const azS = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(φ) - Math.tan(dec) * Math.cos(φ));
+  return { az: (deg(azS) + 180 + 360) % 360, el: deg(el) };
+}
+function saveCal() { localStorage.setItem("cal_v5", JSON.stringify({ sinSum, cosSum, n: calCount })); }
+$("calBtn").onclick = () => {
+  const az = rawAzFiltered();
+  if (az == null) { $("calInfo").textContent = "Sensori non attivi."; return; }
+  const s = sunAzEl(Date.now());
+  if (s.el < 5) { $("calInfo").textContent = "Il Sole è troppo basso (" + s.el.toFixed(0) + "°)."; return; }
+  const err = angDiff(s.az, az);
+  sinSum += Math.sin(rad(err)); cosSum += Math.cos(rad(err)); calCount++;
+  saveCal(); showCal();
+  $("calInfo").textContent += ` - ultima misura ${err.toFixed(1)}°`;
+};
+$("calReset").onclick = () => { sinSum = cosSum = calCount = 0; saveCal(); showCal(); };
+
+// ===== Suoni =====
+function playTone(freq, dur, gainVal = 0.2) {
+  if (!audioCtx || audioCtx.state !== "running") return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  g.gain.value = gainVal; o.frequency.value = freq;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+function stopAllSound() {
+  if (beepTimer) { clearTimeout(beepTimer); beepTimer = null; }
+  if (contOsc) { try { contOsc.stop(); } catch (e) {} contOsc = null; }
+}
+function soundFor(err) {
+  if (!pointing || !audioCtx || audioCtx.state !== "running" || err == null) { stopAllSound(); return; }
+  if (err < 3) {
+    if (beepTimer) { clearTimeout(beepTimer); beepTimer = null; }
+    if (!contOsc) {
+      contOsc = audioCtx.createOscillator();
+      const g = audioCtx.createGain(); g.gain.value = 0.2;
+      contOsc.frequency.value = 1200;
+      contOsc.connect(g); g.connect(audioCtx.destination); contOsc.start();
+    }
+    return;
+  }
+  if (contOsc) { try { contOsc.stop(); } catch (e) {} contOsc = null; }
+  if (beepTimer || err > 60) return;
+  const interval = Math.max(150, Math.min(1200, err * 20));
+  const beep = () => { playTone(700, 0.07); beepTimer = setTimeout(beep, interval); };
+  beep();
+}
+$("testSound").onclick = () => {
+  ensureAudio();
+  setTimeout(() => { playTone(880, 0.3, 0.3); setTimeout(() => playTone(1320, 0.3, 0.3), 400); }, 100);
+  $("status").textContent = audioCtx.state === "running" ? "Suono attivo" : "Suono bloccato dal browser: tocca di nuovo Test suono";
+};
+
+// ===== Puntamento =====
+function loop() {
+  requestAnimationFrame(loop);
+  const p = currentPoint();
+  const az = camAz(), el = camEl();
+  if (!p || az == null) { soundFor(null); return; }
+  const g = aimTo(p.lat, p.lon, p.alt);
+  const dAz = angDiff(g.az, az);
+  const dEl = g.el - el;
+  const err = Math.hypot(dAz, dEl);
+  const centered = err < 3;
+  const now = performance.now();
+  const W = window.innerWidth, H = window.innerHeight;
+  const onScreen = Math.abs(dAz) < HFOV / 2 && Math.abs(dEl) < VFOV / 2;
+
+  if (now - lastDisplay > 250) {
+    lastDisplay = now;
+    $("arDelta").textContent = (dAz >= 0 ? "dx " : "sx ") + Math.abs(dAz).toFixed(1) + "°  " + (dEl >= 0 ? "su " : "giù ") + Math.abs(dEl).toFixed(1) + "°";
+    $("arDelta").className = "big-num " + (centered ? "ok" : err < 10 ? "warn" : "bad");
+    $("arDist").textContent = (g.slant / 1000).toFixed(0) + " km";
+    $("arHint").textContent = centered ? "Centrato: tieni premuto per il suono"
+      : "Gira il telefono verso la freccia" + (onScreen ? "" : " (fuori dallo schermo)");
+  }
+
+  const arrow = $("arrowWrap");
+  arrow.style.display = centered ? "none" : "block";
+  arrow.firstElementChild.style.transform = `rotate(${deg(Math.atan2(dAz, dEl))}deg)`;
+  $("centered").style.display = centered ? "block" : "none";
+
+  // cerchio: si muove solo se lo spostamento supera la zona morta
+  const m = $("marker");
+  if (onScreen && $("ar").style.display === "block") {
+    const x = W / 2 + (dAz / (HFOV / 2)) * (W / 2);
+    const y = H / 2 - (dEl / (VFOV / 2)) * (H / 2);
+    if (markerX == null || Math.hypot(x - markerX, y - markerY) > DEADZONE * (W / HFOV)) { markerX = x; markerY = y; }
+    m.style.display = "block";
+    m.style.left = markerX + "px"; m.style.top = markerY + "px";
+    m.className = centered ? "" : "off";
+  } else { m.style.display = "none"; markerX = null; }
+
+  soundFor(err);
+}
+
+// ===== Vista AR =====
+async function openAR() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    $("video").srcObject = stream;
+    await $("video").play();
+    $("ar").style.display = "block";
+    showCal();
+  } catch (err) {
+    $("status").textContent = "Fotocamera non disponibile: " + err.message;
+  }
+}
+function closeAR() {
+  const s = $("video").srcObject;
+  if (s) s.getTracks().forEach(t => t.stop());
+  $("video").srcObject = null;
+  $("ar").style.display = "none";
+  pointing = false; $("pointBtn").classList.remove("active");
+  stopAllSound();
+}
+const pb = $("pointBtn");
+pb.addEventListener("pointerdown", e => { e.preventDefault(); ensureAudio(); pointing = true; pb.classList.add("active"); });
+["pointerup", "pointercancel", "pointerleave"].forEach(ev => pb.addEventListener(ev, () => {
+  pointing = false; pb.classList.remove("active"); stopAllSound();
+}));
+
+$("startBtn").onclick = startSensors;
+$("refreshBtn").onclick = refresh;
+$("arBtn").onclick = openAR;
+$("arClose").onclick = closeAR;
+</script>
+</body>
+</html>
