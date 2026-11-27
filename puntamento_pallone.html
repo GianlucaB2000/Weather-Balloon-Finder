@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Puntamento pallone</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--fg:#e8edf7;--dim:#8a94a8;--ok:#3ddc84;--warn:#ffb020;--bad:#ff5a5a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:env(safe-area-inset-top,0) 12px env(safe-area-inset-bottom,0)}
+h1{font-size:18px;margin:12px 0 6px}
+button,select{font-size:16px;padding:10px 12px;border-radius:10px;border:1px solid #2a3450;background:#16203a;color:var(--fg)}
+button.big{width:100%;padding:16px;font-size:18px;margin:6px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.card{background:#121a30;border:1px solid #22304f;border-radius:12px;padding:12px;margin:8px 0}
+.dim{color:var(--dim);font-size:13px}
+#arrowWrap{display:flex;justify-content:center;align-items:center;height:220px}
+#arrow{width:140px;height:140px;transition:transform .15s linear}
+#arrow svg{width:100%;height:100%}
+.big-num{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:6px 4px;border-bottom:1px solid #22304f;text-align:left}
+</style>
+</head>
+<body>
+
+<h1>Puntamento pallone</h1>
+<div class="dim" id="status">In attesa dei sensori...</div>
+
+<div class="card">
+  <div class="row">
+    <button id="startBtn" class="big">Attiva sensori e suono</button>
+  </div>
+  <div class="dim">Tocca una volta per dare il permesso alla bussola e al suono.</div>
+</div>
+
+<div class="card">
+  <div id="arrowWrap">
+    <div id="arrow">
+      <svg viewBox="0 0 100 100"><polygon id="arrowShape" points="50,8 88,88 50,70 12,88" fill="#ffb020"/></svg>
+    </div>
+  </div>
+  <div class="row" style="justify-content:space-around">
+    <div>
+      <div class="dim">Scarto</div>
+      <div class="big-num" id="delta">--</div>
+    </div>
+    <div>
+      <div class="dim">Distanza</div>
+      <div class="big-num" id="dist">--</div>
+    </div>
+  </div>
+  <div class="dim" id="hint">Seleziona un pallone dalla lista.</div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <div style="flex:1">
+      <div class="dim">Pallone scelto</div>
+      <div id="chosen">nessuno</div>
+    </div>
+    <button id="calBtn">Calibra con il Sole</button>
+  </div>
+  <div class="dim" id="calInfo">Calibrazione: non fatta</div>
+</div>
+
+<div class="card">
+  <div class="row"><b>Palloni in volo</b> <button id="refreshBtn">Aggiorna</button></div>
+  <table>
+    <thead><tr><th>Serial</th><th>Az</th><th>El</th><th>Quota</th><th>Ultimo dato</th></tr></thead>
+    <tbody id="list"><tr><td colspan="5" class="dim">Nessun dato ancora.</td></tr></tbody>
+  </table>
+  <div class="dim" id="netinfo"></div>
+</div>
+
+<script>
+// ===== Impostazioni =====
+const OBS = { lat: 40.0146, lon: 18.1700, h: 50 };         // Casarano, altezza suolo in m
+const SONDEHUB_URL = "https://api.v2.sondehub.org/sondes?lat=40.0146&lon=18.17&distance=400000&duration=30m";
+const REFRESH_MS = 20000;
+const R = 6371000;
+
+// ===== Stato =====
+let heading = null;          // direzione in cui punta il telefono (gradi, 0 = nord)
+let pitch = null;            // inclinazione del telefono (gradi, 0 = orizzontale)
+let offset = 0;              // correzione bussola da calibrazione
+let calCount = 0;
+let chosen = null;           // serial del pallone scelto
+let sondes = {};             // dati attuali
+let audioCtx = null, beepTimer = null;
+
+const $ = id => document.getElementById(id);
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+
+// ===== Geometria: azimut e altezza dal punto di osservazione =====
+function aimTo(lat, lon, alt) {
+  const φ1 = rad(OBS.lat), φ2 = rad(lat), Δλ = rad(lon - OBS.lon);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  const az = (deg(Math.atan2(y, x)) + 360) % 360;
+  const γ = Math.acos(Math.min(1, Math.sin(φ1) * Math.sin(φ2) + Math.cos(φ1) * Math.cos(φ2) * Math.cos(Δλ)));
+  const dist = γ * R;                                  // distanza sul suolo
+  const r1 = R + OBS.h, r2 = R + alt;
+  // altezza sopra l'orizzonte, con la curvatura della Terra
+  const el = deg(Math.atan2(Math.cos(γ) * r2 - r1, Math.sin(γ) * r2));
+  const slant = Math.sqrt(r1*r1 + r2*r2 - 2*r1*r2*Math.cos(γ));
+  return { az, el, dist, slant };
+}
+
+// differenza angolare con segno, da -180 a 180
+function angDiff(a, b) { let d = ((a - b + 540) % 360) - 180; return d; }
+
+// ===== Sensori =====
+function onOrientation(e) {
+  // alpha: rotazione attorno all'asse verticale; su Android Chrome con evento assoluto è rispetto al nord
+  if (e.alpha == null) return;
+  heading = (360 - e.alpha + offset + 360) % 360;
+  pitch = e.beta != null ? e.beta - 90 : null;   // beta 90 = telefono verticale
+}
+
+async function startSensors() {
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      const p = await DeviceOrientationEvent.requestPermission();
+      if (p !== "granted") throw new Error("permesso negato");
+    }
+    window.addEventListener("deviceorientationabsolute", onOrientation, true);
+    window.addEventListener("deviceorientation", onOrientation, true);
+  } catch (err) {
+    $("status").textContent = "Sensori non disponibili: " + err.message + ". La pagina deve essere aperta in HTTPS.";
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  $("status").textContent = "Sensori attivi. Suono attivo mentre punti.";
+  $("startBtn").textContent = "Sensori attivi";
+  requestAnimationFrame(loop);
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+}
+
+// ===== Dati SondeHub =====
+async function refresh() {
+  try {
+    const r = await fetch(SONDEHUB_URL);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    sondes = parseSondehub(data);
+    renderList();
+    $("netinfo").textContent = "Aggiornato alle " + new Date().toLocaleTimeString("it-IT") + " - palloni: " + Object.keys(sondes).length;
+  } catch (err) {
+    $("netinfo").textContent = "Errore dati: " + err.message + " (controlla SONDEHUB_URL nel file)";
+  }
+}
+
+// Converte la risposta di SondeHub in: { serial: {lat, lon, alt, t} } con l'ultimo dato per pallone
+function parseSondehub(data) {
+  const out = {};
+  for (const serial of Object.keys(data || {})) {
+    const pts = data[serial];
+    if (!pts || typeof pts !== "object") continue;
+    let best = null;
+    for (const k of Object.keys(pts)) {
+      const p = pts[k];
+      if (p && typeof p.lat === "number" && typeof p.lon === "number" && typeof p.alt === "number") {
+        if (!best || k > best.k) best = { k, ...p };
+      }
+    }
+    if (best) out[serial] = { lat: best.lat, lon: best.lon, alt: best.alt, t: best.k, climb: best.vel_v };
+  }
+  return out;
+}
+
+function renderList() {
+  const rows = [];
+  for (const s of Object.keys(sondes)) {
+    const d = sondes[s];
+    const g = aimTo(d.lat, d.lon, d.alt);
+    if (g.el < 0) continue;                    // solo sopra l'orizzonte
+    rows.push({ s, g, d });
+  }
+  rows.sort((a, b) => b.g.el - a.g.el);
+  const tb = $("list");
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="dim">Nessun pallone sopra l\'orizzonte.</td></tr>'; return; }
+  tb.innerHTML = rows.map(({ s, g, d }) =>
+    `<tr><td><a href="#" data-s="${s}" style="color:#8ab4ff">${s}</a></td>
+     <td>${g.az.toFixed(0)}°</td><td>${g.el.toFixed(1)}°</td>
+     <td>${(d.alt/1000).toFixed(1)} km</td><td class="dim">${(d.t||"").toString().slice(11,19)}</td></tr>`
+  ).join("");
+  tb.querySelectorAll("a[data-s]").forEach(a => a.onclick = ev => { ev.preventDefault(); chosen = a.dataset.s; $("chosen").textContent = chosen; });
+}
+
+// ===== Puntamento: freccia, scarto, bip =====
+function loop() {
+  requestAnimationFrame(loop);
+  if (!chosen || !sondes[chosen] || heading == null) {
+    $("delta").textContent = "--"; $("dist").textContent = "--";
+    return;
+  }
+  const d = sondes[chosen];
+  const g = aimTo(d.lat, d.lon, d.alt);
+  const dAz = angDiff(g.az, heading);
+  const dEl = pitch != null ? g.el - pitch : 0;
+  const err = Math.hypot(dAz, dEl);
+
+  // la freccia ruota verso il pallone (per l'azimut)
+  $("arrow").style.transform = `rotate(${dAz}deg)`;
+  $("arrowShape").setAttribute("fill", err < 1 ? "#3ddc84" : "#ffb020");
+  $("delta").textContent = (dAz >= 0 ? "dx " : "sx ") + Math.abs(dAz).toFixed(1) + "°  " + (dEl >= 0 ? "su " : "giù ") + Math.abs(dEl).toFixed(1) + "°";
+  $("delta").className = "big-num " + (err < 1 ? "ok" : err < 5 ? "warn" : "bad");
+  $("dist").textContent = (g.slant/1000).toFixed(0) + " km";
+  $("hint").textContent = err < 1 ? "Centrato" : "Muoviti verso la freccia";
+  updateBeep(err);
+}
+
+function updateBeep(err) {
+  if (!audioCtx) return;
+  if (beepTimer) return;
+  if (err > 30) { stopBeep(); return; }
+  const interval = err < 1 ? 0 : Math.max(120, Math.min(900, err * 30));
+  const tone = () => {
+    const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+    o.frequency.value = err < 1 ? 1200 : 700;
+    gn.gain.value = 0.15;
+    o.connect(gn); gn.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.06);
+  };
+  tone();
+  if (err >= 1) beepTimer = setTimeout(() => { beepTimer = null; }, interval);
+}
+function stopBeep() { if (beepTimer) { clearTimeout(beepTimer); beepTimer = null; } }
+
+// ===== Calibrazione con il Sole =====
+// Centra il Sole nel mirino (con filtro!) e premi il pulsante. Calcola l'errore della bussola.
+function sunAzEl(date) {
+  // posizione approssimata del Sole (sufficiente per la calibrazione a qualche grado)
+  const d = (date - Date.UTC(2000, 0, 1, 12)) / 86400000;
+  const L = (280.46 + 0.9856474 * d) % 360, g = rad((357.528 + 0.9856003 * d) % 360);
+  const lam = rad(L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g));
+  const eps = rad(23.439 - 0.0000004 * d);
+  const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam));
+  const dec = Math.asin(Math.sin(eps) * Math.sin(lam));
+  const gmst = (18.697374558 + 24.06570982441908 * d) % 24;
+  const H = rad(gmst * 15 + OBS.lon) - ra;
+  const el = Math.asin(Math.sin(rad(OBS.lat)) * Math.sin(dec) + Math.cos(rad(OBS.lat)) * Math.cos(dec) * Math.cos(H));
+  const az = Math.atan2(-Math.sin(H), Math.tan(dec) * Math.cos(rad(OBS.lat)) - Math.sin(rad(OBS.lat)) * Math.cos(H));
+  return { az: (deg(az) + 360) % 360, el: deg(el) };
+}
+
+$("calBtn").onclick = () => {
+  if (heading == null) { $("calInfo").textContent = "Sensori non attivi."; return; }
+  const s = sunAzEl(Date.now());
+  if (s.el < 5) { $("calInfo").textContent = "Il Sole è troppo basso per calibrare (" + s.el.toFixed(0) + "°)."; return; }
+  const raw = (360 - lastAlpha + 360) % 360;
+  const err = angDiff(s.az, raw);
+  calCount++;
+  offset = (offset * (calCount - 1) + err) / calCount;   // media delle misure
+  $("calInfo").textContent = `Calibrazione: ${calCount} misure, correzione ${offset.toFixed(1)}°. Ripeti in punti diversi del cielo.`;
+};
+let lastAlpha = 0;
+window.addEventListener("deviceorientationabsolute", e => { if (e.alpha != null) lastAlpha = e.alpha; }, true);
+window.addEventListener("deviceorientation", e => { if (e.alpha != null) lastAlpha = e.alpha; }, true);
+
+// ===== Pulsanti =====
+$("startBtn").onclick = startSensors;
+$("refreshBtn").onclick = refresh;
+</script>
+</body>
+</html>
